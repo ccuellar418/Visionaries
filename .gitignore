@@ -150,6 +150,9 @@ activemq-data/
 *.sage.py
 
 # Environments
+# Downloaded MediaPipe model
+hand_landmarker.task
+
 .env
 .envrc
 .venv
