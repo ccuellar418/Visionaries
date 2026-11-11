@@ -1,0 +1,172 @@
+import time
+import urllib.request
+from pathlib import Path
+
+import cv2
+import mediapipe as mp
+from mediapipe.tasks import python as mp_python
+from mediapipe.tasks.python import vision
+
+# ---------------- Config ----------------
+CAMERA_INDEX = 0          # change to 1, 2... if you have multiple cameras
+NUM_HANDS = 2
+MIRROR = True             # selfie view; also makes Left/Right labels correct
+PRINT_LANDMARKS = False   # toggle with 'p' while running
+
+MODEL_URL = (
+    "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
+    "hand_landmarker/float16/latest/hand_landmarker.task"
+)
+MODEL_PATH = Path(__file__).with_name("hand_landmarker.task")
+
+# 21 landmark indices
+LANDMARK_NAMES = [
+    "WRIST",
+    "THUMB_CMC", "THUMB_MCP", "THUMB_IP", "THUMB_TIP",
+    "INDEX_MCP", "INDEX_PIP", "INDEX_DIP", "INDEX_TIP",
+    "MIDDLE_MCP", "MIDDLE_PIP", "MIDDLE_DIP", "MIDDLE_TIP",
+    "RING_MCP", "RING_PIP", "RING_DIP", "RING_TIP",
+    "PINKY_MCP", "PINKY_PIP", "PINKY_DIP", "PINKY_TIP",
+]
+
+HAND_CONNECTIONS = [
+    (0, 1), (1, 2), (2, 3), (3, 4),          # thumb
+    (0, 5), (5, 6), (6, 7), (7, 8),          # index
+    (5, 9), (9, 10), (10, 11), (11, 12),     # middle
+    (9, 13), (13, 14), (14, 15), (15, 16),   # ring
+    (13, 17), (17, 18), (18, 19), (19, 20),  # pinky
+    (0, 17),                                 # palm base
+]
+
+
+def ensure_model():
+    """Download the hand landmarker model next to this file if it's missing."""
+    if not MODEL_PATH.exists():
+        print(f"Downloading model to {MODEL_PATH} ...")
+        urllib.request.urlretrieve(MODEL_URL, MODEL_PATH)
+        print("Done.")
+
+
+def create_landmarker():
+    options = vision.HandLandmarkerOptions(
+        base_options=mp_python.BaseOptions(model_asset_path=str(MODEL_PATH)),
+        running_mode=vision.RunningMode.VIDEO,
+        num_hands=NUM_HANDS,
+        min_hand_detection_confidence=0.5,
+        min_hand_presence_confidence=0.5,
+        min_tracking_confidence=0.5,
+    )
+    return vision.HandLandmarker.create_from_options(options)
+
+
+def extract_hands(result, frame_w, frame_h):
+    """
+    Convert MediaPipe's result into a plain list of hands:
+    [
+      {
+        "handedness": "Left"/"Right",
+        "score": float,
+        "landmarks": [(x, y, z), ...]   # normalized 0-1 image coords, z relative to wrist
+        "pixels":    [(px, py), ...]    # pixel coords in the frame
+        "world":     [(x, y, z), ...]   # meters, origin near hand center
+      },
+      ...
+    ]
+    """
+    hands = []
+    for i, hand_lms in enumerate(result.hand_landmarks):
+        category = result.handedness[i][0]
+        hands.append({
+            "handedness": category.category_name,
+            "score": category.score,
+            "landmarks": [(lm.x, lm.y, lm.z) for lm in hand_lms],
+            "pixels": [(int(lm.x * frame_w), int(lm.y * frame_h)) for lm in hand_lms],
+            "world": [(lm.x, lm.y, lm.z) for lm in result.hand_world_landmarks[i]],
+        })
+    return hands
+
+
+def draw_hands(frame, hands):
+    for hand in hands:
+        pts = hand["pixels"]
+        for a, b in HAND_CONNECTIONS:
+            cv2.line(frame, pts[a], pts[b], (255, 255, 255), 2)
+        for j, p in enumerate(pts):
+            color = (0, 0, 255) if j in (4, 8, 12, 16, 20) else (0, 255, 0)
+            cv2.circle(frame, p, 5, color, -1)
+
+        wx, wy = pts[0]
+        label = f'{hand["handedness"]} ({hand["score"]:.2f})'
+        cv2.putText(frame, label, (wx - 40, wy + 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 0), 2)
+
+
+def main():
+    global PRINT_LANDMARKS
+    ensure_model()
+
+    cap = cv2.VideoCapture(CAMERA_INDEX)
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open camera {CAMERA_INDEX}")
+
+    start = time.monotonic()
+    last_ts = -1
+    prev_time = time.monotonic()
+
+    with create_landmarker() as landmarker:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                print("Failed to read frame.")
+                break
+
+            if MIRROR:
+                frame = cv2.flip(frame, 1)
+
+            h, w = frame.shape[:2]
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+
+            # VIDEO mode needs strictly increasing timestamps (ms)
+            ts = int((time.monotonic() - start) * 1000)
+            if ts <= last_ts:
+                ts = last_ts + 1
+            last_ts = ts
+
+            result = landmarker.detect_for_video(mp_image, ts)
+            hands = extract_hands(result, w, h)
+
+            # ---- Use the landmarks here ----
+            for hand in hands:
+                ix, iy = hand["pixels"][8]  # index fingertip
+                cv2.putText(frame, f"index tip: ({ix}, {iy})", (ix + 10, iy - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+                if PRINT_LANDMARKS:
+                    print(hand["handedness"])
+                    for name, (x, y, z) in zip(LANDMARK_NAMES, hand["landmarks"]):
+                        print(f"  {name:12s} x={x:.3f} y={y:.3f} z={z:.3f}")
+
+            draw_hands(frame, hands)
+
+            # FPS
+            now = time.monotonic()
+            fps = 1.0 / max(now - prev_time, 1e-6)
+            prev_time = now
+            cv2.putText(frame, f"FPS: {fps:.1f}  hands: {len(hands)}", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.putText(frame, "q/Esc: quit   p: print landmarks", (10, h - 15),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+
+            cv2.imshow("MediaPipe Hand Tracking", frame)
+            key = cv2.waitKey(1) & 0xFF
+            if key in (ord("q"), 27):
+                break
+            if key == ord("p"):
+                PRINT_LANDMARKS = not PRINT_LANDMARKS
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    main()
