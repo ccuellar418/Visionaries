@@ -38,6 +38,7 @@ class FrameGestureDetector:
     def idle_state(self):
         """Drop the rectangle and go back to waiting for the frame gesture."""
         self.locked = False
+        self.frozen = False
         self.hold_count = 0
         self.pinch_count = 0
         self.rect = None
@@ -86,16 +87,20 @@ class FrameGestureDetector:
         pinch = False
         if not self.locked:
             self.locked = self.confirm_rectangle(prediction, frame_shape)
-        else: # if locked, start checking to see if they start pinching
+        elif not self.frozen:
             pinch = self.confirm_pinch(prediction, frame_shape)
+            if pinch:
+                self.frozen = True
 
         # once locked, follow the anchors whenever both hands are visible;
         # if a hand drops out, keep the last rectangle
         hands = _hands_in_pixels(prediction, frame_shape)
-        if self.locked and len(hands) >= 2:
+        if self.locked and len(hands) >= 2 and not self.frozen and self.pinch_count == 0:
             self._update_rect(hands[0],hands[1])
 
-        if self.locked:
+        if self.frozen:
+            state="frozen"
+        elif self.locked:
             state = "locked"
         elif self.hold_count > 0:
             state = "locking"
@@ -133,7 +138,6 @@ class FrameGestureDetector:
             s * old_right + (1 - s) * right,
             s * old_bottom + (1 - s) * bottom,
         )
-
 
 def _hands_in_pixels(prediction, frame_shape):
     """Return every detected hand as a list of (x, y) pixel points."""
