@@ -5,6 +5,8 @@ description = "MediaPipe gesture and hand tracking project"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "imageio>=2.38.2",
+    "imageio-ffmpeg>=0.8.1",
     "mediapipe==0.10.14",
     "opencv-contrib-python>=4.11,<5",
 ]
