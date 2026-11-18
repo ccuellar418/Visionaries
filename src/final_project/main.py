@@ -3,17 +3,20 @@ import mediapipe as mp
 import sys
 import time
 import numpy as np
+from pathlib import Path
 
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
-from editing import apply_filter, rectangle_mask
+# from editing import apply_filter, rectangle_mask
+from gesture_detection import FrameGestureDetector
+
 
 # max number of hands to detect
 MAX_NUM_HANDS = 2
 # min detection/tracking confidence
 MIN_CONFIDENCE = 0.5
 # mediapipe task file location
-MODEL_PATH = "../../models/gesture_recognizer.task"
+MODEL_PATH = str(Path(__file__).resolve().parents[2] / "models" / "gesture_recognizer.task")
 
 # main hand gesture model
 model = vision.GestureRecognizer.create_from_options(vision.GestureRecognizerOptions(
@@ -53,27 +56,13 @@ def handle_results(frame, result):
         y = min(p[1] for p in points) - 10
         cv2.putText(frame, label, (x, max(y, 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-#function to test masking and filtering using bitwise_not as filter func
-#rectangle defined by thumb landmarks
-def test_rectangle_filter(frame, prediction):
-    if len(prediction.hand_landmarks) < 2:
-        return frame
-
-    h, w = frame.shape[:2]
-    thumb1 = prediction.hand_landmarks[0][4]
-    thumb2 = prediction.hand_landmarks[1][4]
-    mask = rectangle_mask(
-        frame, thumb1.x * w, thumb1.y * h, thumb2.x * w, thumb2.y * h
-    )
-    return apply_filter(frame, mask, cv2.bitwise_not)
-
-
 def main():
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
         print(f"Error opening camera, exiting...")
         sys.exit(1)
         
+    frame_gesture = FrameGestureDetector()
     start = time.monotonic()
     with model:
         while True:
@@ -100,10 +89,18 @@ def main():
             # see: https://developers.google.com/edge/mediapipe/solutions/vision/gesture_recognizer#task_output
             prediction = model.recognize_for_video(mp_image, timestamp_ms)
 
-            frame = test_rectangle_filter(frame, prediction)
+            # detect the two-handed frame gesture and the pinch
+            gesture_result = frame_gesture.update(prediction, frame.shape)
 
             # draw hand & labels on each frame w/ the predicted results
             handle_results(frame, prediction)
+
+            # show the current gesture state in the top left corner
+            if gesture_result.pinch:
+                state_label = "freeze"
+            else:
+                state_label = gesture_result.state            
+            cv2.putText(frame, state_label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
             cv2.imshow("Gesture Recognition", frame)
 
             # press q to quit
