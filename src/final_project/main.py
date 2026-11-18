@@ -2,14 +2,13 @@ import cv2
 import mediapipe as mp
 import sys
 import time
-import numpy as np
 from pathlib import Path
+
 
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
-# from editing import apply_filter, rectangle_mask
-from gesture_detection import FrameGestureDetector
-
+from editing import apply_filter, rectangle_mask
+from gesture_detection import FrameGestureDetector, draw_rectangle
 
 # max number of hands to detect
 MAX_NUM_HANDS = 2
@@ -92,8 +91,14 @@ def main():
             # detect the two-handed frame gesture and the pinch
             gesture_result = frame_gesture.update(prediction, frame.shape)
 
+            # apply the filter inside the rectangle once it's locked
+            if gesture_result.rect is not None:
+                mask = rectangle_mask(frame, *gesture_result.rect)
+                frame = apply_filter(frame, mask, cv2.bitwise_not)
+            
             # draw hand & labels on each frame w/ the predicted results
             handle_results(frame, prediction)
+            draw_rectangle(frame, gesture_result)
 
             # show the current gesture state in the top left corner
             if gesture_result.pinch:

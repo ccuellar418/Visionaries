@@ -1,16 +1,19 @@
 import math
 from dataclasses import dataclass
+import cv2
 
 # MediaPipe hand landmark indices
 # see: https://developers.google.com/edge/mediapipe/solutions/vision/hand_landmarker
 THUMB_TIP = 4
 INDEX_TIP = 8
+THUMB_NEAR_WEB = 2
+INDEX_NEAR_WEB = 5
 
 
 @dataclass
 class FrameGestureResult:
     state: str = "idle"
-    # rectangle as (x1, y1, x2, y2) in pixels placed on your two thumbs, set once locked
+    # rectangle as (x1, y1, x2, y2) in pixels placed on your two thumb-index webs, set once locked
     rect: tuple | None = None
     # True while a pinch is being activated
     pinch: bool = False
@@ -35,6 +38,7 @@ class FrameGestureDetector:
     def idle_state(self):
         """Drop the rectangle and go back to waiting for the frame gesture."""
         self.locked = False
+        self.frozen = False
         self.hold_count = 0
         self.pinch_count = 0
         self.rect = None
@@ -83,23 +87,24 @@ class FrameGestureDetector:
         pinch = False
         if not self.locked:
             self.locked = self.confirm_rectangle(prediction, frame_shape)
-        else: # if locked, start checking to see if they start pinching
+        elif not self.frozen:
             pinch = self.confirm_pinch(prediction, frame_shape)
+            if pinch:
+                self.frozen = True
 
         # once locked, follow the anchors whenever both hands are visible;
         # if a hand drops out, keep the last rectangle
         hands = _hands_in_pixels(prediction, frame_shape)
-        if self.locked and len(hands) >= 2:
-            a, b = hands[0], hands[1]
-            anchors = [a[THUMB_TIP], b[THUMB_TIP]]
-            self._update_rect(anchors)
+        if self.locked and len(hands) >= 2 and not self.frozen and self.pinch_count == 0:
+            self._update_rect(hands[0],hands[1])
 
-        if self.locked:
+        if self.frozen:
+            state="frozen"
+        elif self.locked:
             state = "locked"
         elif self.hold_count > 0:
             state = "locking"
-        else: # to remove the rectangle just set the self.hold_count back to 0 
-            #(when we do the gesture that removes the filter)
+        else: 
             state = "idle"
 
         if self.locked and self.rect:
@@ -110,24 +115,29 @@ class FrameGestureDetector:
         
         return FrameGestureResult(state, rect, pinch)
 
-    def _update_rect(self, anchors):
-        (ax, ay), (bx, by) = anchors
-        new_x1, new_y1 = min(ax, bx), min(ay, by)
-        new_x2, new_y2 = max(ax, bx), max(ay, by)
+    def _update_rect(self, a, b):
+        web_a = _midpoint(a[THUMB_NEAR_WEB], a[INDEX_NEAR_WEB])
+        web_b = _midpoint(b[THUMB_NEAR_WEB], b[INDEX_NEAR_WEB])
+
+        # web_{a|b}[0] = horizontal coordinate
+        # web_{a|b}[1] = vertical coordinate
+        left = min(web_a[0], web_b[0])
+        right = max(web_a[0], web_b[0])
+        top = min(web_a[1], web_b[1])
+        bottom = max(web_a[1], web_b[1])
 
         if self.rect is None or self.smoothing <= 0:
-            self.rect = (new_x1, new_y1, new_x2, new_y2)
-            return 
-
+            self.rect = (left, top, right, bottom)
+            return
+        
         s = self.smoothing
-        old_x1, old_y1, old_x2, old_y2 = self.rect
+        old_left, old_top, old_right, old_bottom = self.rect
         self.rect = (
-            s * old_x1 + (1 - s) * new_x1,
-            s * old_y1 + (1 - s) * new_y1,
-            s * old_x2 + (1 - s) * new_x2,
-            s * old_y2 + (1 - s) * new_y2,
+            s * old_left + (1 - s) * left,
+            s * old_top + (1 - s) * top,
+            s * old_right + (1 - s) * right,
+            s * old_bottom + (1 - s) * bottom,
         )
-
 
 def _hands_in_pixels(prediction, frame_shape):
     """Return every detected hand as a list of (x, y) pixel points."""
@@ -137,4 +147,15 @@ def _hands_in_pixels(prediction, frame_shape):
         # give the hands their landmark points
         points = [(landmark.x * w, landmark.y * h) for landmark in hand]
         hands.append(points)
-    return hands            
+    return hands  
+
+def _midpoint(p, q):
+    return ((p[0] + q[0]) / 2, (p[1] + q[1]) / 2)          
+
+def draw_rectangle(frame, result):
+    """Draw the rectangle outline once it's locked."""
+    if result.rect is None:
+        return frame
+    x1, y1, x2, y2 = result.rect
+    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 5)
+    return frame
